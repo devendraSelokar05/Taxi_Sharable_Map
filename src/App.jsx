@@ -20,7 +20,7 @@ import {
 import socketService from "../utils/socket"; // path check kar lena
 
 const GOOGLE_MAPS_API_KEY = "AIzaSyB4rilTPZoZBVoOgZHcOzwmbUp8PfwpgAE";
-const POLLING_INTERVAL = 30000; // 30 seconds
+const POLLING_INTERVAL = 30000; // 30 second
 const API_BASE_URL = import.meta.env.VITE_BACKEND_URL || "http://localhost:9000/api";
 
 const mapContainerStyle = {
