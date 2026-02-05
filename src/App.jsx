@@ -17,10 +17,11 @@ import {
   CheckCircle,
   Navigation,
 } from "lucide-react";
+import socketService from "../utils/socket"; // path check kar lena
 
 const GOOGLE_MAPS_API_KEY = "AIzaSyB4rilTPZoZBVoOgZHcOzwmbUp8PfwpgAE";
 const POLLING_INTERVAL = 30000; // 30 seconds
-const API_BASE_URL = "https://cab-booking-be-j9w5.onrender.com/api";
+const API_BASE_URL = import.meta.env.VITE_BACKEND_URL || "http://localhost:9000/api";
 
 const mapContainerStyle = {
   height: "100%",
@@ -41,6 +42,8 @@ function ShareableMap() {
   const [liveLocation, setLiveLocation] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  const markerRef = useRef(null);
+  const animationRef = useRef(null);
 
   const { isLoaded, loadError } = useJsApiLoader({
     googleMapsApiKey: GOOGLE_MAPS_API_KEY,
@@ -97,6 +100,7 @@ function ShareableMap() {
           );
 
           const transformedData = {
+            _id: apiData._id,
             tripId: apiData.bookingId,
             status: apiData.status,
 
@@ -117,7 +121,7 @@ function ShareableMap() {
                 lat: apiData.dropCoordinates.lat,
                 lng: apiData.dropCoordinates.lng,
               },
-              time: "Expected: TBD",
+              time: apiData.tripEndTime,
             },
 
             tripStartTime: apiData.tripStartTime,
@@ -147,11 +151,12 @@ function ShareableMap() {
             },
 
             // ✅ Use parsed driver location or fallback to pickup
-            currentLocation: parsedDriverLocation || {
-              lat: apiData.pickupCoordinates.lat,
-              lng: apiData.pickupCoordinates.lng,
-            },
+            // currentLocation: parsedDriverLocation || {
+            //   lat: apiData.pickupCoordinates.lat,
+            //   lng: apiData.pickupCoordinates.lng,
+            // },
 
+            currentLocation: parsedDriverLocation,
             rideType: apiData.rideType,
             bookingType: apiData.bookingType,
             pickups: apiData.pickups,
@@ -161,7 +166,9 @@ function ShareableMap() {
           console.log("📍 Live Location:", transformedData.currentLocation);
 
           setTripData(transformedData);
-          setLiveLocation(transformedData.currentLocation);
+          if (parsedDriverLocation) {
+            setLiveLocation(parsedDriverLocation);
+          }
         } else {
           setError(result.message || "Trip not found");
         }
@@ -176,27 +183,66 @@ function ShareableMap() {
     fetchTripData();
   }, []);
 
-  // ✅ Poll for live location updates
-  // useEffect(() => {
-  //   if (!tripData || tripData.status !== "ongoing") return;
+   const moveMarkerSmoothly = (from, to) => {
+    if (!markerRef.current) return;
 
-  //   const interval = setInterval(async () => {
+    const steps = 15;
+    let step = 0;
+
+    const latStep = (to.lat - from.lat) / steps;
+    const lngStep = (to.lng - from.lng) / steps;
+
+    if (animationRef.current) {
+      cancelAnimationFrame(animationRef.current);
+    }
+
+    const animate = () => {
+      step++;
+
+      const nextPos = {
+        lat: from.lat + latStep * step,
+        lng: from.lng + lngStep * step,
+      };
+
+      markerRef.current.setPosition(nextPos);
+
+      if (step < steps) {
+        animationRef.current = requestAnimationFrame(animate);
+      }
+    };
+
+    animate();
+  };
+  // ✅ Poll for live location updates
+
+  // ✅ Poll for live location - Check multiple active statuses
+  //   useEffect(() => {
+  //     const activeStatuses = [
+  //       "In Progress",
+  //       "Ride Started",
+  //       "Completed",
+  //       "Dropped",
+  //     ];
+
+  //     if (!tripData || !activeStatuses.includes(tripData.status)) return;
+
+  //    const interval = setInterval(async () => {
   //     try {
   //       const tripId = getTripIdFromURL();
   //       const response = await fetch(
-  //         `${API_BASE_URL}/activeRide/${tripId}/location`,
+  //         `${API_BASE_URL}/activeRide/${tripId}`
   //       );
 
-  //       if (response.ok) {
-  //         const result = await response.json();
-  //         if (result.success && result.data?.currentLocation) {
-  //           const parsedLocation = parseDriverLocation(
-  //             result.data.currentLocation,
-  //           );
-  //           if (parsedLocation) {
-  //             setLiveLocation(parsedLocation);
-  //           }
-  //         }
+  //       if (!response.ok) return;
+
+  //       const result = await response.json();
+
+  //       const parsedLocation = parseDriverLocation(
+  //         result.data?.currentLocation
+  //       );
+
+  //       if (parsedLocation) {
+  //         setLiveLocation(parsedLocation);
   //       }
   //     } catch (err) {
   //       console.error("Error fetching live location:", err);
@@ -206,37 +252,40 @@ function ShareableMap() {
   //   return () => clearInterval(interval);
   // }, [tripData]);
 
-  // ✅ Poll for live location - Check multiple active statuses
   useEffect(() => {
-    const activeStatuses = ["In Progress", "Ride Started", "Ongoing"];
+    if (!tripData?._id) return;
 
-    if (!tripData || !activeStatuses.includes(tripData.status)) return;
+    // 1️⃣ socket connect
+    socketService.initializeConnection({
+      role: "public",
+      rideId: tripData._id,
+    });
 
-    const interval = setInterval(async () => {
-      try {
-        const tripId = getTripIdFromURL();
-        const response = await fetch(
-          `${API_BASE_URL}/activeRide/${tripId}/location`,
-        );
+    // 2️⃣ join ride room
+    socketService.joinRideTrackingRoom(tripData._id);
 
-        if (response.ok) {
-          const result = await response.json();
-          if (result.success && result.data?.currentLocation) {
-            const parsedLocation = parseDriverLocation(
-              result.data.currentLocation,
-            );
-            if (parsedLocation) {
-              setLiveLocation(parsedLocation);
-            }
+    // 3️⃣ listen live driver location
+    socketService.onRideLocationUpdate((data) => {
+      console.log("📡 Socket Location:", data);
+
+       if (data?.lat && data?.lng) {
+        setLiveLocation((prev) => {
+          if (prev) {
+            moveMarkerSmoothly(prev, {
+              lat: data.lat,
+              lng: data.lng,
+            });
           }
-        }
-      } catch (err) {
-        console.error("Error fetching live location:", err);
+          return { lat: data.lat, lng: data.lng };
+        });
       }
-    }, POLLING_INTERVAL);
-
-    return () => clearInterval(interval);
-  }, [tripData]);
+    });
+    // 4️⃣ cleanup
+    return () => {
+      socketService.leaveRideTrackingRoom(tripData._id);
+      socketService.disconnect();
+    };
+  }, [tripData?._id]);
 
   useEffect(() => {
     if (liveLocation && mapRef.current) {
@@ -251,6 +300,11 @@ function ShareableMap() {
       const bounds = new window.google.maps.LatLngBounds();
       bounds.extend(tripData.pickup.coordinates);
       bounds.extend(tripData.drop.coordinates);
+
+      // ✅ ADD THIS (LIVE DRIVER LOCATION)
+      if (tripData.currentLocation) {
+        bounds.extend(tripData.currentLocation);
+      }
 
       if (tripData.stops && tripData.stops.length > 0) {
         tripData.stops.forEach((stop) => bounds.extend(stop.coordinates));
@@ -425,12 +479,13 @@ function ShareableMap() {
               {liveLocation && (
                 <Marker
                   position={liveLocation}
+                  onLoad={(marker) => (markerRef.current = marker)}
                   icon={{
-                    url: "data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iNDgiIGhlaWdodD0iNDgiIHZpZXdCb3g9IjAgMCA0OCA0OCIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj4KPGNpcmNsZSBjeD0iMjQiIGN5PSIyNCIgcj0iMjAiIGZpbGw9IiNGRjhDMTIiIHN0cm9rZT0id2hpdGUiIHN0cm9rZS13aWR0aD0iNCIvPgo8cGF0aCBkPSJNMjQgMTJMMjggMjBIMzJMMjQgMzJMMjAgMjRIMTZMMjQgMTJaIiBmaWxsPSJ3aGl0ZSIvPgo8L3N2Zz4=",
+                    url: "https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcS95O2zAz1WQUPvjMoLIKKLY6R_Zl8iYzoeSw&s",
                     scaledSize: new window.google.maps.Size(48, 48),
                     anchor: new window.google.maps.Point(24, 24),
                   }}
-                  animation={window.google.maps.Animation.DROP}
+                  // animation={window.google.maps.Animation.DROP}
                 />
               )}
 
