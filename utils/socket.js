@@ -1,14 +1,13 @@
 import { io } from 'socket.io-client';
 
-const SOCKET_URL ="https://cab-booking-be-j9w5.onrender.com";
+const SOCKET_URL = "https://cab-booking-be-j9w5.onrender.com";
 
 class SocketService {
   constructor() {
     this.socket = null;
-    this.eventListeners = new Map(); // Track active listeners
+    this.eventListeners = new Map();
   }
 
-  // Initialize connection
   initializeConnection(socketPayload) {
     if (this.socket?.connected) {
       console.warn('⚠️ Socket already connected!');
@@ -25,7 +24,6 @@ class SocketService {
       reconnectionAttempts: 5,
     });
 
-    // Connection events
     this.socket.on('connect', () => {
       console.log('✅ Connected to Socket.IO server with ID:', this.socket.id);
     });
@@ -39,7 +37,6 @@ class SocketService {
     });
   }
 
-  // Disconnect socket
   disconnect() {
     if (this.socket) {
       console.log('❗ Disconnecting socket...');
@@ -50,7 +47,6 @@ class SocketService {
     }
   }
 
-  // Generic emit
   emitEvent(event, data) {
     if (this.socket) {
       console.log(`📤 Emitting Event: ${event}`, data);
@@ -60,25 +56,20 @@ class SocketService {
     }
   }
 
-  // Generic on with duplicate prevention
   onEvent(event, callback) {
     if (!this.socket) {
       console.error('❌ Socket not initialized!');
       return;
     }
-
-    // Remove existing listener for this event first
     if (this.eventListeners.has(event)) {
       console.log(`🔄 Removing existing listener for: ${event}`);
       this.offEvent(event);
     }
-
     console.log(`👂 Listening for Event: ${event}`);
     this.socket.on(event, callback);
     this.eventListeners.set(event, callback);
   }
 
-  // Remove Event listener
   offEvent(event) {
     if (this.socket && this.eventListeners.has(event)) {
       console.log(`❌ Removing Listener for Event: ${event}`);
@@ -106,7 +97,6 @@ class SocketService {
   }
 
   sendTicketMessage({ ticketId, senderId, senderType, content }) {
-    console.log("📤 Sending Ticket Msg:", { ticketId, senderId, senderType, content });
     this.emitEvent('ticketMessage', { ticketId, senderId, senderType, content });
   }
 
@@ -115,13 +105,12 @@ class SocketService {
   }
 
   deleteTicketMessage({ ticketId, messageIds }) {
-  console.log("🗑️ Deleting ticket message:", { ticketId, messageIds });
-  this.emitEvent("deleteTicketMessage", { ticketId, messageIds });
-}
+    this.emitEvent("deleteTicketMessage", { ticketId, messageIds });
+  }
 
-onTicketMessageDeleted(callback) {
-  this.onEvent("messageDeleted", callback);
-}
+  onTicketMessageDeleted(callback) {
+    this.onEvent("messageDeleted", callback);
+  }
 
   // =========================
   // DRIVER-USER CHAT HELPERS
@@ -146,12 +135,8 @@ onTicketMessageDeleted(callback) {
   // DRIVER LIVE LOCATION HELPERS
   // =========================
   sendDriverLiveLocation({ rideId, rideBookingId, bookingId, driverId, lat, lng, heading, speed }) {
-    this.emitEvent('driverLiveLocation', {rideId, rideBookingId, bookingId, driverId, lat, lng, heading, speed });
+    this.emitEvent('driverLiveLocation', { rideId, rideBookingId, bookingId, driverId, lat, lng, heading, speed });
   }
-
-//   onUpdateDriverLocation(callback) {
-//     this.onEvent('updateDriverLocation', callback);
-//   }
 
   joinRideRoom(rideId, driverId) {
     this.emitEvent('joinRideRoom', { rideId, driverId });
@@ -162,16 +147,24 @@ onTicketMessageDeleted(callback) {
   }
 
   // =========================
-  // NEW: TRACKING HELPERS FOR RIDE-BASED CAB TRACKING
+  // TRACKING HELPERS (ShareableMap use karta hai)
   // =========================
+
+  // ✅ FIX 1: Object format mein bhejo, driverId = "public" for tracking page
   joinRideTrackingRoom(rideId) {
-    if (!rideId) return console.warn("⚠️ rideId is required to join ride tracking room");
-    this.emitEvent("joinRideRoom", rideId);
+    if (!rideId) {
+      return console.warn("⚠️ rideId is required to join ride tracking room");
+    }
+    // Backend needs { rideId, driverId } — tracking page ke liye "public" pass karo
+    this.emitEvent("joinRideRoom", { rideId, driverId: "public" });
+    console.log(`🚗 Joined ride tracking room: ${rideId}`);
   }
 
-  leaveRideTrackingRoom(rideId, rideBookingId,) {
-    if (!rideId || rideBookingId) return;
-    this.emitEvent("leaveRideRoom", rideId,);
+  // ✅ FIX 2: Condition fix kiya — sirf rideId check karo
+  leaveRideTrackingRoom(rideId) {
+    if (!rideId) return;
+    this.emitEvent("leaveRideRoom", { rideId });
+    console.log(`🚪 Left ride tracking room: ${rideId}`);
   }
 
   onRideLocationUpdate(callback) {

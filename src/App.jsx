@@ -3,7 +3,7 @@ import {
   GoogleMap,
   useJsApiLoader,
   Marker,
-  Polyline,
+  DirectionsRenderer, // ✅ NEW
 } from "@react-google-maps/api";
 import {
   MapPin,
@@ -11,29 +11,25 @@ import {
   User,
   Car,
   CreditCard,
-  Phone,
-  Mail,
   AlertCircle,
   CheckCircle,
   Navigation,
+  AlertTriangle,
+  Info,
 } from "lucide-react";
-import socketService from "../utils/socket"; // path check kar lena
+import socketService from "../utils/socket";
 
 const GOOGLE_MAPS_API_KEY = "AIzaSyB4rilTPZoZBVoOgZHcOzwmbUp8PfwpgAE";
-const POLLING_INTERVAL = 30000; // 30 second
-const API_BASE_URL = import.meta.env.VITE_BACKEND_URL || "http://localhost:9000/api";
+const API_BASE_URL =
+  import.meta.env.VITE_BACKEND_URL || "http://localhost:9000/api";
+const LIBRARIES = ["places"]; // ✅ stable reference - prevent re-renders
 
-const mapContainerStyle = {
-  height: "100%",
-  width: "100%",
-};
-
+const mapContainerStyle = { height: "100%", width: "100%" };
 const mapOptions = {
   zoomControl: true,
-  streetViewControl: false,
+  streetViewControl: true,
   mapTypeControl: false,
   fullscreenControl: false,
-  disableDefaultUI: false,
 };
 
 function ShareableMap() {
@@ -44,9 +40,11 @@ function ShareableMap() {
   const [error, setError] = useState(null);
   const markerRef = useRef(null);
   const animationRef = useRef(null);
+  const [directionsResult, setDirectionsResult] = useState(null); // ✅ NEW
 
   const { isLoaded, loadError } = useJsApiLoader({
     googleMapsApiKey: GOOGLE_MAPS_API_KEY,
+    libraries: LIBRARIES,
   });
 
   const getTripIdFromURL = () => {
@@ -54,11 +52,8 @@ function ShareableMap() {
     return params.get("tripId") || "6982e014bbda598007f477a5";
   };
 
-  // ✅ Helper: Convert GeoJSON to {lat, lng} format
   const parseDriverLocation = (driverLocation) => {
     if (!driverLocation) return null;
-
-    // GeoJSON format: { type: "Point", coordinates: [lng, lat] }
     if (
       driverLocation.type === "Point" &&
       Array.isArray(driverLocation.coordinates)
@@ -68,13 +63,44 @@ function ShareableMap() {
         lat: driverLocation.coordinates[1],
       };
     }
-
-    // Already in {lat, lng} format
-    if (driverLocation.lat && driverLocation.lng) {
-      return driverLocation;
-    }
-
+    if (driverLocation.lat && driverLocation.lng) return driverLocation;
     return null;
+  };
+
+  // ✅ NEW: Fetch actual road route from Google Directions API
+  const fetchDirections = (pickupCoords, dropCoords, waypoints = []) => {
+    if (!window.google) return;
+
+    const directionsService = new window.google.maps.DirectionsService();
+
+    const waypointsList = waypoints.map((wp) => ({
+      location: new window.google.maps.LatLng(wp.lat, wp.lng),
+      stopover: true,
+    }));
+
+    directionsService.route(
+      {
+        origin: new window.google.maps.LatLng(
+          pickupCoords.lat,
+          pickupCoords.lng,
+        ),
+        destination: new window.google.maps.LatLng(
+          dropCoords.lat,
+          dropCoords.lng,
+        ),
+        waypoints: waypointsList,
+        travelMode: window.google.maps.TravelMode.DRIVING,
+        optimizeWaypoints: false,
+      },
+      (result, status) => {
+        if (status === window.google.maps.DirectionsStatus.OK) {
+          console.log("✅ Directions fetched successfully");
+          setDirectionsResult(result);
+        } else {
+          console.error("❌ Directions fetch failed:", status);
+        }
+      },
+    );
   };
 
   useEffect(() => {
@@ -82,19 +108,13 @@ function ShareableMap() {
       try {
         setLoading(true);
         const tripId = getTripIdFromURL();
-
         const response = await fetch(`${API_BASE_URL}/activeRide/${tripId}`);
-
-        if (!response.ok) {
-          throw new Error("Failed to fetch trip data");
-        }
+        if (!response.ok) throw new Error("Failed to fetch trip data");
 
         const result = await response.json();
 
         if (result.success && result.data) {
           const apiData = result.data;
-
-          // ✅ Parse driver location (GeoJSON format)
           const parsedDriverLocation = parseDriverLocation(
             apiData.driverLocation,
           );
@@ -103,7 +123,6 @@ function ShareableMap() {
             _id: apiData._id,
             tripId: apiData.bookingId,
             status: apiData.status,
-
             pickup: {
               location: apiData.pickupLocation,
               coordinates: {
@@ -112,9 +131,7 @@ function ShareableMap() {
               },
               time: apiData.date,
             },
-
-            stops: [], // Add logic if needed
-
+            stops: [],
             drop: {
               location: apiData.dropLocation,
               coordinates: {
@@ -123,10 +140,8 @@ function ShareableMap() {
               },
               time: apiData.tripEndTime,
             },
-
             tripStartTime: apiData.tripStartTime,
             tripEndTime: apiData.tripEndTime,
-
             driver: apiData.assignedDriver
               ? {
                   name: apiData.assignedDriver.name || "Not Assigned",
@@ -139,36 +154,27 @@ function ShareableMap() {
               type: apiData.cabDetails?.vehicleType || "Unknown",
               model: apiData.cabDetails?.vehicleVariant || "Unknown",
               number: apiData.cabDetails?.vehicleNumber || "N/A",
-              color: "White",
               image: apiData.cabDetails?.cabImage,
             },
-
             payment: {
               advanceAmount: apiData.advanceAmount || 0,
               pendingAmount: apiData.pendingAmount || 0,
               totalAmount: apiData.totalAmount || 0,
               mode: apiData.paymentStatus,
             },
-
-            // ✅ Use parsed driver location or fallback to pickup
-            // currentLocation: parsedDriverLocation || {
-            //   lat: apiData.pickupCoordinates.lat,
-            //   lng: apiData.pickupCoordinates.lng,
-            // },
-
             currentLocation: parsedDriverLocation,
             rideType: apiData.rideType,
             bookingType: apiData.bookingType,
             pickups: apiData.pickups,
+            isFareRecalculated: apiData.isFareRecalculated || false,
+            isDropLocationChanged: apiData.isDropLocationChanged || false,
+            fareRecalculationReason: apiData.fareRecalculationReason || null,
+            extraCharges: apiData.extraCharges || 0,
+            actualDropLocation: apiData.actualDropLocation || null,
           };
 
-          console.log("✅ Transformed Data:", transformedData);
-          console.log("📍 Live Location:", transformedData.currentLocation);
-
           setTripData(transformedData);
-          if (parsedDriverLocation) {
-            setLiveLocation(parsedDriverLocation);
-          }
+          if (parsedDriverLocation) setLiveLocation(parsedDriverLocation);
         } else {
           setError(result.message || "Trip not found");
         }
@@ -183,104 +189,64 @@ function ShareableMap() {
     fetchTripData();
   }, []);
 
-   const moveMarkerSmoothly = (from, to) => {
+  // ✅ Fetch road directions once tripData + Google Maps is ready
+  useEffect(() => {
+    if (!tripData || !isLoaded) return;
+
+    const dropCoords =
+      tripData.isDropLocationChanged &&
+      tripData.actualDropLocation?.coordinates?.lat
+        ? {
+            lat: tripData.actualDropLocation.coordinates.lat,
+            lng: tripData.actualDropLocation.coordinates.lng,
+          }
+        : tripData.drop.coordinates;
+
+    const stopWaypoints = tripData.stops?.map((s) => s.coordinates) || [];
+
+    fetchDirections(tripData.pickup.coordinates, dropCoords, stopWaypoints);
+  }, [tripData, isLoaded]);
+
+  const moveMarkerSmoothly = (from, to) => {
     if (!markerRef.current) return;
-
-    const steps = 15;
+    const steps = 30; // ✅ smoother animation
     let step = 0;
-
     const latStep = (to.lat - from.lat) / steps;
     const lngStep = (to.lng - from.lng) / steps;
-
-    if (animationRef.current) {
-      cancelAnimationFrame(animationRef.current);
-    }
+    if (animationRef.current) cancelAnimationFrame(animationRef.current);
 
     const animate = () => {
       step++;
-
       const nextPos = {
         lat: from.lat + latStep * step,
         lng: from.lng + lngStep * step,
       };
-
       markerRef.current.setPosition(nextPos);
-
-      if (step < steps) {
-        animationRef.current = requestAnimationFrame(animate);
-      }
+      if (step < steps) animationRef.current = requestAnimationFrame(animate);
     };
-
     animate();
   };
-  // ✅ Poll for live location updates
 
-  // ✅ Poll for live location - Check multiple active statuses
-  //   useEffect(() => {
-  //     const activeStatuses = [
-  //       "In Progress",
-  //       "Ride Started",
-  //       "Completed",
-  //       "Dropped",
-  //     ];
-
-  //     if (!tripData || !activeStatuses.includes(tripData.status)) return;
-
-  //    const interval = setInterval(async () => {
-  //     try {
-  //       const tripId = getTripIdFromURL();
-  //       const response = await fetch(
-  //         `${API_BASE_URL}/activeRide/${tripId}`
-  //       );
-
-  //       if (!response.ok) return;
-
-  //       const result = await response.json();
-
-  //       const parsedLocation = parseDriverLocation(
-  //         result.data?.currentLocation
-  //       );
-
-  //       if (parsedLocation) {
-  //         setLiveLocation(parsedLocation);
-  //       }
-  //     } catch (err) {
-  //       console.error("Error fetching live location:", err);
-  //     }
-  //   }, POLLING_INTERVAL);
-
-  //   return () => clearInterval(interval);
-  // }, [tripData]);
-
+  // ✅ Socket: listen for live driver location
   useEffect(() => {
     if (!tripData?._id) return;
 
-    // 1️⃣ socket connect
     socketService.initializeConnection({
       role: "public",
       rideId: tripData._id,
     });
-
-    // 2️⃣ join ride room
     socketService.joinRideTrackingRoom(tripData._id);
 
-    // 3️⃣ listen live driver location
     socketService.onRideLocationUpdate((data) => {
       console.log("📡 Socket Location:", data);
-
-       if (data?.lat && data?.lng) {
+      if (data?.lat && data?.lng) {
         setLiveLocation((prev) => {
-          if (prev) {
-            moveMarkerSmoothly(prev, {
-              lat: data.lat,
-              lng: data.lng,
-            });
-          }
+          if (prev) moveMarkerSmoothly(prev, { lat: data.lat, lng: data.lng });
           return { lat: data.lat, lng: data.lng };
         });
       }
     });
-    // 4️⃣ cleanup
+
     return () => {
       socketService.leaveRideTrackingRoom(tripData._id);
       socketService.disconnect();
@@ -295,21 +261,20 @@ function ShareableMap() {
 
   const onLoad = (map) => {
     mapRef.current = map;
-
     if (tripData) {
       const bounds = new window.google.maps.LatLngBounds();
       bounds.extend(tripData.pickup.coordinates);
       bounds.extend(tripData.drop.coordinates);
-
-      // ✅ ADD THIS (LIVE DRIVER LOCATION)
-      if (tripData.currentLocation) {
-        bounds.extend(tripData.currentLocation);
+      if (tripData.currentLocation) bounds.extend(tripData.currentLocation);
+      if (
+        tripData.isDropLocationChanged &&
+        tripData.actualDropLocation?.coordinates?.lat
+      ) {
+        bounds.extend({
+          lat: tripData.actualDropLocation.coordinates.lat,
+          lng: tripData.actualDropLocation.coordinates.lng,
+        });
       }
-
-      if (tripData.stops && tripData.stops.length > 0) {
-        tripData.stops.forEach((stop) => bounds.extend(stop.coordinates));
-      }
-
       map.fitBounds(bounds);
     }
   };
@@ -336,7 +301,7 @@ function ShareableMap() {
             Error Loading
           </h2>
           <p className="text-gray-600">
-            {error || "Please check your internet connection and try again."}
+            {error || "Please check your internet connection."}
           </p>
         </div>
       </div>
@@ -359,12 +324,6 @@ function ShareableMap() {
     );
   }
 
-  const routeCoordinates = [
-    tripData.pickup.coordinates,
-    ...(tripData.stops?.map((stop) => stop.coordinates) || []),
-    tripData.drop.coordinates,
-  ].filter((coord) => coord && coord.lat && coord.lng);
-
   return (
     <div className="min-h-screen bg-gradient-to-br from-orange-50 via-white to-orange-50">
       {/* Header */}
@@ -384,18 +343,6 @@ function ShareableMap() {
                 </p>
               </div>
             </div>
-            {/* {tripData.status === 'ongoing' && (
-              <div className="flex items-center space-x-2 bg-green-100 px-4 py-2 rounded-full">
-                <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></div>
-                <span className="text-green-700 font-semibold text-sm">Live</span>
-              </div>
-            )}
-            {tripData.status === 'completed' && (
-              <div className="bg-blue-100 px-4 py-2 rounded-full">
-                <span className="text-blue-700 font-semibold text-sm">Completed</span>
-              </div>
-            )} */}
-            {/* // Header section - Update conditions */}
             {(tripData.status === "In Progress" ||
               tripData.status === "Ride Started") && (
               <div className="flex items-center space-x-2 bg-green-100 px-4 py-2 rounded-full">
@@ -405,14 +352,8 @@ function ShareableMap() {
                 </span>
               </div>
             )}
-            {tripData.status === "Completed" && (
-              <div className="bg-blue-100 px-4 py-2 rounded-full">
-                <span className="text-blue-700 font-semibold text-sm">
-                  {tripData.status}
-                </span>
-              </div>
-            )}
-            {tripData.status === "Dropped" && (
+            {(tripData.status === "Completed" ||
+              tripData.status === "Dropped") && (
               <div className="bg-blue-100 px-4 py-2 rounded-full">
                 <span className="text-blue-700 font-semibold text-sm">
                   {tripData.status}
@@ -423,8 +364,32 @@ function ShareableMap() {
         </div>
       </header>
 
-      {/* Main Content */}
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6">
+        {/* Fare Recalculation Alert */}
+        {tripData.isFareRecalculated && tripData.isDropLocationChanged && (
+          <div className="bg-yellow-50 border-l-4 border-yellow-400 rounded-lg shadow-md">
+            <div className="flex items-start p-4">
+              <AlertTriangle className="w-6 h-6 text-yellow-600 mr-3 flex-shrink-0 mt-0.5" />
+              <div className="flex-1">
+                <h3 className="text-lg font-semibold text-yellow-800 mb-1">
+                  ⚠️ Fare Adjusted
+                </h3>
+                <p className="text-yellow-700 text-sm mb-2">
+                  {tripData.fareRecalculationReason ||
+                    "The fare has been recalculated due to route changes."}
+                </p>
+                {tripData.extraCharges > 0 && (
+                  <div className="bg-yellow-100 rounded-md px-3 py-2 mt-2 inline-block">
+                    <p className="text-yellow-900 font-semibold text-sm">
+                      Additional Charges: ₹{tripData.extraCharges}
+                    </p>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* Map Section */}
         <div className="bg-white rounded-2xl shadow-xl overflow-hidden">
           <div className="h-[400px] sm:h-[500px] lg:h-[600px] relative">
@@ -435,7 +400,22 @@ function ShareableMap() {
               onLoad={onLoad}
               options={mapOptions}
             >
-              {/* Pickup Marker */}
+              {/* ✅ Road-following route (replaces straight Polyline) */}
+              {directionsResult && (
+                <DirectionsRenderer
+                  directions={directionsResult}
+                  options={{
+                    suppressMarkers: true, // ✅ We use our own custom markers
+                    polylineOptions: {
+                      strokeColor: "#FF8C12",
+                      strokeOpacity: 0.85,
+                      strokeWeight: 5,
+                    },
+                  }}
+                />
+              )}
+
+              {/* Pickup Marker - Green A */}
               <Marker
                 position={tripData.pickup.coordinates}
                 icon={{
@@ -455,62 +435,74 @@ function ShareableMap() {
                 }}
               />
 
-              {/* Drop Marker */}
+              {/* Original Drop Marker - Blue / faded if changed */}
               <Marker
                 position={tripData.drop.coordinates}
                 icon={{
                   path: "M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z",
-                  fillColor: "#EF4444",
-                  fillOpacity: 1,
+                  fillColor: "#1507E0",
+                  fillOpacity: tripData.isDropLocationChanged ? 0.4 : 1,
                   strokeColor: "#ffffff",
                   strokeWeight: 2,
                   scale: 2,
                   anchor: new window.google.maps.Point(12, 22),
                 }}
                 label={{
-                  text: "B",
+                  text: tripData.isDropLocationChanged ? "B₁" : "B",
                   color: "#ffffff",
                   fontSize: "14px",
                   fontWeight: "bold",
                 }}
               />
 
-              {/* Live Cab Location */}
+              {/* Actual Drop Marker - Red B₂ (if changed) */}
+              {tripData.isDropLocationChanged &&
+                tripData.actualDropLocation?.coordinates?.lat && (
+                  <Marker
+                    position={{
+                      lat: tripData.actualDropLocation.coordinates.lat,
+                      lng: tripData.actualDropLocation.coordinates.lng,
+                    }}
+                    icon={{
+                      path: "M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z",
+                      fillColor: "#EF4444",
+                      fillOpacity: 1,
+                      strokeColor: "#ffffff",
+                      strokeWeight: 2,
+                      scale: 2,
+                      anchor: new window.google.maps.Point(12, 22),
+                    }}
+                    label={{
+                      text: "B₂",
+                      color: "#ffffff",
+                      fontSize: "14px",
+                      fontWeight: "bold",
+                    }}
+                  />
+                )}
+
+              {/* Live Cab Marker */}
               {liveLocation && (
                 <Marker
                   position={liveLocation}
                   onLoad={(marker) => (markerRef.current = marker)}
                   icon={{
-                    url: "https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcS95O2zAz1WQUPvjMoLIKKLY6R_Zl8iYzoeSw&s",
-                    scaledSize: new window.google.maps.Size(48, 48),
-                    anchor: new window.google.maps.Point(24, 24),
+                    url: "https://cdn-icons-png.flaticon.com/512/3097/3097144.png", // Top-down yellow cab
+                    scaledSize: new window.google.maps.Size(45, 45),
+                    anchor: new window.google.maps.Point(22, 22),
                   }}
-                  // animation={window.google.maps.Animation.DROP}
                 />
               )}
 
-              {/* Route Polyline */}
-              {routeCoordinates.length >= 2 && (
-                <Polyline
-                  path={routeCoordinates}
-                  options={{
-                    strokeColor: "#FF8C12",
-                    strokeOpacity: 0.8,
-                    strokeWeight: 4,
-                  }}
-                />
+              {tripData.status === "Completed" && (
+                <div className="absolute top-4 left-1/2 transform -translate-x-1/2 bg-white shadow-lg rounded-full px-6 py-3 flex items-center space-x-2">
+                  <CheckCircle className="w-5 h-5 text-green-500" />
+                  <span className="font-semibold text-gray-800">
+                    Trip Completed
+                  </span>
+                </div>
               )}
             </GoogleMap>
-
-            {/* Status Badge Overlay */}
-            {tripData.status === "completed" && (
-              <div className="absolute top-4 left-1/2 transform -translate-x-1/2 bg-white shadow-lg rounded-full px-6 py-3 flex items-center space-x-2">
-                <CheckCircle className="w-5 h-5 text-green-500" />
-                <span className="font-semibold text-gray-800">
-                  Trip Completed
-                </span>
-              </div>
-            )}
           </div>
         </div>
 
@@ -522,9 +514,7 @@ function ShareableMap() {
               <MapPin className="w-6 h-6 text-orange-500 mr-2" />
               Trip Route
             </h2>
-
             <div className="space-y-6">
-              {/* Pickup */}
               <div className="flex items-start space-x-4">
                 <div className="flex-shrink-0 w-12 h-12 bg-green-100 rounded-full flex items-center justify-center">
                   <div className="w-4 h-4 bg-green-500 rounded-full"></div>
@@ -537,33 +527,60 @@ function ShareableMap() {
                     {tripData.pickup.location}
                   </p>
                   <p className="text-sm text-gray-600 mt-1 flex items-center">
-                    <Clock className="w-4 h-4 mr-1" />
-                    {tripData.pickup.time}
+                    <Clock className="w-4 h-4 mr-1" /> {tripData.pickup.time}
                   </p>
                 </div>
               </div>
 
-              {/* Drop */}
               <div className="flex items-start space-x-4">
-                <div className="flex-shrink-0 w-12 h-12 bg-red-100 rounded-full flex items-center justify-center">
-                  <div className="w-4 h-4 bg-red-500 rounded-full"></div>
+                <div
+                  className={`flex-shrink-0 w-12 h-12 rounded-full flex items-center justify-center ${tripData.isDropLocationChanged ? "bg-gray-100" : "bg-red-100"}`}
+                >
+                  <div
+                    className={`w-4 h-4 rounded-full ${tripData.isDropLocationChanged ? "bg-gray-400" : "bg-red-500"}`}
+                  ></div>
                 </div>
                 <div className="flex-1">
-                  <p className="text-sm text-gray-500 font-medium">
-                    Drop Location
+                  <p className="text-sm text-yellow-500 font-medium">
+                    {tripData.isDropLocationChanged
+                      ? "Original Drop Location"
+                      : "Drop Location"}
                   </p>
-                  <p className="text-gray-800 font-semibold">
+                  <p
+                    className={`font-semibold ${tripData.isDropLocationChanged ? "text-gray-500 line-through" : "text-gray-800"}`}
+                  >
                     {tripData.drop.location}
                   </p>
                   <p className="text-sm text-gray-600 mt-1 flex items-center">
-                    <Clock className="w-4 h-4 mr-1" />
-                    {tripData.drop.time}
+                    <Clock className="w-4 h-4 mr-1" /> {tripData.drop.time}
                   </p>
                 </div>
               </div>
+
+              {tripData.isDropLocationChanged &&
+                tripData.actualDropLocation?.address && (
+                  <div className="flex items-start space-x-4 bg-red-50 rounded-lg p-4 border-2 border-red-200">
+                    <div className="flex-shrink-0 w-12 h-12 bg-red-100 rounded-full flex items-center justify-center">
+                      <div className="w-4 h-4 bg-red-500 rounded-full"></div>
+                    </div>
+                    <div className="flex-1">
+                      <div className="flex items-center space-x-2 mb-1">
+                        <p className="text-sm text-red-700 font-semibold">
+                          Actual Drop Location
+                        </p>
+                        <Info className="w-4 h-4 text-red-500" />
+                      </div>
+                      <p className="text-gray-800 font-semibold">
+                        {tripData.actualDropLocation.address}
+                      </p>
+                      <p className="text-xs text-red-600 mt-2">
+                        ⚠️ Drop location was changed during the trip
+                      </p>
+                    </div>
+                  </div>
+                )}
             </div>
 
-            {/* Trip Info Cards */}
             <div className="mt-6 pt-6 border-t border-gray-200">
               <div className="grid grid-cols-2 gap-4">
                 <div className="bg-blue-50 rounded-xl p-4">
@@ -582,16 +599,13 @@ function ShareableMap() {
             </div>
           </div>
 
-          {/* Driver & Cab Details + Payment */}
+          {/* Driver & Payment */}
           <div className="space-y-6">
-            {/* Driver & Cab Card */}
             <div className="bg-white rounded-2xl shadow-xl p-6">
               <h2 className="text-xl font-bold text-gray-800 mb-6 flex items-center">
                 <User className="w-6 h-6 text-orange-500 mr-2" />
                 Driver & Cab Details
               </h2>
-
-              {/* Driver Info */}
               {tripData.driver && (
                 <div className="flex items-center space-x-4 mb-6">
                   <img
@@ -610,8 +624,6 @@ function ShareableMap() {
                   </div>
                 </div>
               )}
-
-              {/* Cab Details */}
               <div className="bg-gradient-to-br from-orange-50 to-orange-100 rounded-xl p-4 space-y-3">
                 {tripData.cab.image && (
                   <div className="mb-3">
@@ -640,53 +652,12 @@ function ShareableMap() {
               </div>
             </div>
 
-            {/* Payment Card */}
-            {/* <div className="bg-white rounded-2xl shadow-xl p-6">
-              <h2 className="text-xl font-bold text-gray-800 mb-6 flex items-center">
-                <CreditCard className="w-6 h-6 text-orange-500 mr-2" />
-                Payment Details
-              </h2>
-
-              <div className="space-y-4">
-                <div className="flex justify-between items-center py-3 border-b border-gray-200">
-                  <span className="text-gray-600">Payment Status</span>
-                  <span className="font-semibold text-gray-800">
-                    {tripData.payment.mode}
-                  </span>
-                </div>
-                <div className="flex justify-between items-center py-3 border-b border-gray-200">
-                  <span className="text-gray-600">Total Amount</span>
-                  <span className="font-semibold text-gray-800">
-                    ₹{tripData.payment.totalAmount}
-                  </span>
-                </div>
-                <div className="flex justify-between items-center py-3 border-b border-gray-200">
-                  <span className="text-gray-600">Advance Paid</span>
-                  <span className="font-bold text-green-600">
-                    ₹{tripData.payment.advanceAmount}
-                  </span>
-                </div>
-                <div className="bg-orange-50 rounded-xl p-4 mt-4">
-                  <div className="flex justify-between items-center">
-                    <span className="font-semibold text-gray-700">
-                      Remaining
-                    </span>
-                    <span className="font-bold text-orange-600 text-xl">
-                      ₹{tripData.payment.pendingAmount}
-                    </span>
-                  </div>
-                </div>
-              </div>
-            </div> */}
-
             <div className="bg-white rounded-2xl shadow-xl p-6">
               <h2 className="text-xl font-bold text-gray-800 mb-6 flex items-center">
                 <CreditCard className="w-6 h-6 text-orange-500 mr-2" />
                 Payment Details
               </h2>
-
               <div className="space-y-4">
-                {/* Payment Status with Color Badge */}
                 <div className="flex justify-between items-center py-3 border-b border-gray-200">
                   <span className="text-gray-600">Payment Status</span>
                   <span
@@ -701,24 +672,28 @@ function ShareableMap() {
                     {tripData.payment.mode}
                   </span>
                 </div>
-
-                {/* Total Amount */}
                 <div className="flex justify-between items-center py-3 border-b border-gray-200">
                   <span className="text-gray-600">Total Amount</span>
                   <span className="font-semibold text-gray-800">
                     ₹{tripData.payment.totalAmount}
                   </span>
                 </div>
-
-                {/* Advance Paid */}
+                {tripData.isFareRecalculated && tripData.extraCharges > 0 && (
+                  <div className="flex justify-between items-center py-3 border-b border-red-200 bg-red-50 -mx-4 px-4 rounded">
+                    <span className="text-red-700 font-medium">
+                      Extra Charges
+                    </span>
+                    <span className="font-bold text-red-600">
+                      +₹{tripData.extraCharges}
+                    </span>
+                  </div>
+                )}
                 <div className="flex justify-between items-center py-3 border-b border-gray-200">
                   <span className="text-gray-600">Advance Paid</span>
                   <span className="font-bold text-green-600">
                     ₹{tripData.payment.advanceAmount}
                   </span>
                 </div>
-
-                {/* Remaining Amount */}
                 <div className="bg-orange-50 rounded-xl p-4 mt-4">
                   <div className="flex justify-between items-center">
                     <span className="font-semibold text-gray-700">
